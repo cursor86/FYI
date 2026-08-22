@@ -79,6 +79,21 @@ SANA_MODEL_VERSION=sana-model-version
 
 ---
 
+## **Free-Tier Alternatives**
+
+For a no-API-key setup, two free services are available as building blocks alongside the paid ones:
+
+- **Images** — `src/services/pollinations_service.py` (`PollinationsService.generate_image`) generates images via [Pollinations.ai](https://pollinations.ai), no key required.
+- **Voiceover** — `src/services/edge_tts_service.py` (`EdgeTTSService.generate_voiceover`) generates narration via Microsoft Edge's free TTS engine (`edge-tts`), no key required.
+
+These free services still render video locally with `ffmpeg`. On Windows, install it with:
+
+```powershell
+winget install Gyan.FFmpeg
+```
+
+---
+
 ## **Running RapidClip**
 
 ### **Using Docker**

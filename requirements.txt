@@ -6,6 +6,7 @@ charset-normalizer==3.4.0
 colorama==0.4.6
 decorator==5.2.1
 distro==1.9.0
+edge-tts==6.1.19
 elevenlabs==1.50.2
 eval_type_backport==0.2.0
 griffe==1.5.1

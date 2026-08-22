@@ -1,6 +1,7 @@
 import sys
 import os
 import uuid
+import asyncio
 import logging
 from config import settings
 from parsers.arguments import parse_args
@@ -9,6 +10,8 @@ from services.elevenlabs_service import ElevenLabsService
 from services.whisper_service import WhisperService
 from services.openai_tts_service import OpenAITTSService
 from services.replicate_service import ReplicateService
+from services.edge_tts_service import EdgeTTSService
+from services.pollinations_service import PollinationsService
 from utils.file_handler import save_audio, save_subtitles, save_image
 from utils.logger import setup_logger
 from utils.audio_processing import reprocess_audio
@@ -29,10 +32,19 @@ def main():
     logger = setup_logger()
     args = parse_args()
 
+    if args.tts_service == "elevenlabs" and not settings.ELEVENLABS_API_KEY:
+        logger.error(
+            "ELEVENLABS_API_KEY is required when --tts_service is 'elevenlabs'.")
+        sys.exit(1)
+
+    if args.image_service == "replicate" and not settings.REPLICATE_API_TOKEN:
+        logger.error(
+            "REPLICATE_API_TOKEN is required when --image_service is 'replicate'.")
+        sys.exit(1)
+
     # Initialize services
     logger.info("Initializing services...")
     openai_service = OpenAIService(api_key=settings.OPENAI_API_KEY)
-    elevenlabs_service = ElevenLabsService(api_key=settings.ELEVENLABS_API_KEY)
     whisper_service = WhisperService(api_key=settings.OPENAI_API_KEY)
 
     # Generate script (and voice instructions if using OpenAI TTS)
@@ -70,16 +82,39 @@ def main():
                 f"Error generating script and voice instructions: {e}")
             sys.exit(1)
 
+    # Generate a unique file_id for this video and create a dedicated output folder
+    file_id = str(uuid.uuid4())
+    video_folder = f"output/{file_id}"
+    if not os.path.exists(video_folder):
+        os.makedirs(video_folder)
+
+    # Add a file handler to the logger to save logs in the video folder
+    file_handler = logging.FileHandler(
+        f"{video_folder}/process.log", mode='w', encoding='utf-8')
+    file_handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+
     # Choose TTS service and convert script to audio
     try:
         if args.tts_service == "elevenlabs":
             logger.info("Converting text to speech with Eleven Labs...")
+            elevenlabs_service = ElevenLabsService(
+                api_key=settings.ELEVENLABS_API_KEY)
             response = elevenlabs_service.text_to_speech(
                 voice_id=args.voice_id,
                 text=script_text,
                 stability=args.stability,
                 similarity_boost=args.similarity_boost
             )
+            output_file = save_audio(
+                response, directory=video_folder, file_id=file_id)
+        elif args.tts_service == "edge_tts":
+            logger.info("Converting text to speech with edge-tts (free)...")
+            edge_tts_service = EdgeTTSService(voice=args.edge_tts_voice)
+            output_file = f"{video_folder}/{file_id}.mp3"
+            asyncio.run(edge_tts_service.generate_voiceover(
+                script_text, output_file))
         else:
             logger.info("Converting text to speech with OpenAI TTS...")
             tts_service = OpenAITTSService(api_key=settings.OPENAI_API_KEY)
@@ -89,22 +124,9 @@ def main():
                 voice=args.openai_tts_voice,
                 instructions=instructions_str
             )
+            output_file = save_audio(
+                response, directory=video_folder, file_id=file_id)
 
-        # Generate a unique file_id for this video and create a dedicated output folder
-        file_id = str(uuid.uuid4())
-        video_folder = f"output/{file_id}"
-        if not os.path.exists(video_folder):
-            os.makedirs(video_folder)
-
-        # Add a file handler to the logger to save logs in the video folder
-        file_handler = logging.FileHandler(
-            f"{video_folder}/process.log", mode='w', encoding='utf-8')
-        file_handler.setFormatter(logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-        logger.addHandler(file_handler)
-
-        output_file = save_audio(
-            response, directory=video_folder, file_id=file_id)
         logger.info(
             f"Audio successfully generated and saved as {output_file}.")
     except Exception as e:
@@ -163,10 +185,14 @@ def main():
 
     # Generate images based on subtitle intervals
     logger.info(
-        "Generating images based on subtitle intervals using Replicate...")
+        f"Generating images based on subtitle intervals using {args.image_service}...")
     try:
-        replicate_service = ReplicateService(
-            api_token=settings.REPLICATE_API_TOKEN)
+        if args.image_service == "replicate":
+            replicate_service = ReplicateService(
+                api_token=settings.REPLICATE_API_TOKEN)
+        else:
+            pollinations_service = PollinationsService()
+
         # Initialize list to store prompts generated for images in this video
         previous_image_prompts = []
         # Group cues in pairs (each image will cover up to two subtitle intervals)
@@ -182,14 +208,21 @@ def main():
             # Log the generated image prompt
             logger.info(f"Image prompt for cue {(i // 2) + 1}: {image_prompt}")
             previous_image_prompts.append(image_prompt)
-            image_data = replicate_service.generate_image(
-                image_prompt, width=1080, height=1920)
-            image_file = save_image(
-                image_data,
-                directory=video_folder,
-                file_id=file_id,
-                suffix=f"img_{(i // 2) + 1}"
-            )
+
+            if args.image_service == "replicate":
+                image_data = replicate_service.generate_image(
+                    image_prompt, width=1080, height=1920)
+                image_file = save_image(
+                    image_data,
+                    directory=video_folder,
+                    file_id=file_id,
+                    suffix=f"img_{(i // 2) + 1}"
+                )
+            else:
+                image_file = f"{video_folder}/{file_id}_img_{(i // 2) + 1}.png"
+                pollinations_service.generate_image(
+                    image_prompt, image_file, width=1080, height=1920)
+
             logger.info(f"Image generated and saved as {image_file}.")
     except Exception as e:
         logger.error(f"Error generating images: {e}")
